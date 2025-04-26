@@ -1,0 +1,142 @@
+!pip install easyocr
+!pip install transformers
+!pip install torch
+!pip install gradio
+
+from transformers import AutoModel, AutoTokenizer
+repo_id = "meta-llama/Llama-3.1-8B"
+
+# Load the model and tokenizer
+model = AutoModel.from_pretrained(repo_id)
+tokenizer = AutoTokenizer.from_pretrained(repo_id)
+
+import easyocr
+import cv2
+import matplotlib.pyplot as plt
+import gradio as gr
+import re
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import torch
+import numpy as np
+
+# Initialize OCR reader
+reader = easyocr.Reader(['en'], gpu=True)
+
+# Load LLaMA 3.1 8B model and tokenizer (assuming they are set up in Colab)
+#model_name = "meta-llama/Llama-3.1-8B-Instruct"# Replace with your model path
+model_name = "meta-llama/Llama-3.1-8B"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
+
+# Dictionary for technical ingredient names and their safety profiles
+ingredient_mapping = {
+    "e330": {"common_name": "Citric Acid", "purpose": "Acidity regulator, safe in moderation", "child_safe": True},
+    "e621": {"common_name": "Monosodium Glutamate (MSG)", "purpose": "Flavor enhancer, may cause sensitivity in some", "child_safe": False},
+    "sucralose": {"common_name": "Sucralose", "purpose": "Artificial sweetener, safe in moderation", "child_safe": True},
+    # Add more mappings as needed
+}
+
+# List of prohibited substances (example)
+prohibited_substances = ["tartrazine", "aspartame", "sodium benzoate"]  # Expand based on regulations
+
+# Nutritional thresholds (example)
+nutritional_limits = {
+    "sugar": {"max_per_100g": 10, "unit": "g", "child_max": 5},
+    "caffeine": {"max_per_100g": 100, "unit": "mg", "child_max": 0},
+}
+
+def preprocess_text(text):
+    """Clean and normalize extracted text."""
+    text = text.lower().strip()
+    text = re.sub(r'[^\w\s.,%]', '', text)  # Remove special characters
+    # Replace technical codes with common names
+    for code, info in ingredient_mapping.items():
+        text = text.replace(code, info["common_name"])
+    return text
+
+def extract_nutritional_info(text):
+    """Extract sugar and caffeine content from text."""
+    sugar_match = re.search(r'sugars?\s*(\d+\.?\d*)\s*(g|grams)', text, re.IGNORECASE)
+    caffeine_match = re.search(r'caffeine\s*(\d+\.?\d*)\s*(mg|milligrams)', text, re.IGNORECASE)
+
+    sugar = float(sugar_match.group(1)) if sugar_match else 0
+    caffeine = float(caffeine_match.group(1)) if caffeine_match else 0
+    return sugar, caffeine
+
+def analyze_label(image):
+    try:
+        # Step 1: OCR extraction
+        if isinstance(image, np.ndarray):
+            image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        results = reader.readtext(image)
+        extracted_text = " ".join([res[1] for res in results])
+
+        if not extracted_text:
+            return "Error: No text detected in the image."
+
+        # Step 2: Preprocess text
+        cleaned_text = preprocess_text(extracted_text)
+
+        # Step 3: Extract nutritional info
+        sugar, caffeine = extract_nutritional_info(cleaned_text)
+
+        # Step 4: Check for prohibited substances
+        warnings = []
+        for substance in prohibited_substances:
+            if substance in cleaned_text:
+                warnings.append(f"Warning: Contains {substance}, which may be prohibited or harmful.")
+
+        # Step 5: Check nutritional limits
+        if sugar > nutritional_limits["sugar"]["max_per_100g"]:
+            warnings.append(f"High sugar content ({sugar}g/100g) exceeds recommended limit.")
+        if sugar > nutritional_limits["sugar"]["child_max"]:
+            warnings.append(f"High sugar content ({sugar}g/100g) not recommended for children.")
+        if caffeine > nutritional_limits["caffeine"]["child_max"]:
+            warnings.append(f"Contains caffeine ({caffeine}mg/100g), not suitable for children.")
+
+        # Step 6: Create prompt for LLM
+        prompt = f"""
+You are an expert in food safety and nutrition. Analyze the following food label text and provide:
+1. A one-line summary stating whether the food is safe, contains prohibited substances, or has cautions (especially for children).
+2. A brief explanation of the ingredients' purposes and any technical terms in simple language.
+3. A recommendation on whether this food is suitable for children.
+
+Label Text: {cleaned_text}
+
+**Example Output:**
+Summary: This chocolate is safe but high in sugar, not ideal for children.
+Explanation: Sugar adds sweetness, cocoa provides flavor, and citric acid adjusts tartness. High sugar can cause health issues if consumed excessively.
+Recommendation: Not recommended for children due to high sugar content.
+
+Output:
+Summary:
+Explanation:
+Recommendation:
+"""
+
+        # Step 7: Generate output using the LLM
+        input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(model.device)
+        output_ids = model.generate(input_ids, max_length=500, temperature=0.7, top_p=0.9)
+        output_text = tokenizer.decode(output_ids[0], skip_special_tokens=True)
+
+        # Step 8: Append warnings
+        if warnings:
+            output_text += "\n\nWarnings:\n" + "\n".join(warnings)
+
+        return output_text
+
+    except Exception as e:
+        return f"Error processing image: {str(e)}"
+
+# Create Gradio interface
+interface = gr.Interface(
+    fn=analyze_label,
+    inputs=gr.Image(type="numpy", label="Upload Food Label Image"),
+    outputs=gr.Textbox(label="Analysis Result"),
+    title="Food Label Safety Analyzer",
+    description="Upload a food label image to check for harmful substances, nutritional content, and suitability for children.",
+    allow_flagging="never"
+)
+
+# Launch interface
+interface.launch(debug=True)
