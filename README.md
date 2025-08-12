@@ -46,12 +46,12 @@ Built for Google Colab, using LLaMA 3.1 as the core language model for text unde
 nutrition-ai/
 │
 ├── notebooks/
-│ └── Nutrition_AI_Analyzer.ipynb # Main Colab notebook
+│ └── Nutrition_AI_Analyzer.ipynb 
 ├── data/
-│ └── sample_labels/ # Sample nutrition label images
+│ └── sample_labels/
 ├── utils/
-│ ├── ocr_utils.py # OCR functions
-│ ├── analysis_utils.py # Ingredient & nutrition analysis
-│ └── rules.py # Custom rules & mappings
+│ ├── ocr_utils.py 
+│ ├── analysis_utils.py 
+│ └── rules.py 
 ├── README.md
 └── requirements.txt
